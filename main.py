@@ -2,6 +2,7 @@
 from numba import jit
 import time, queue
 import threading, multiprocessing
+import multiprocessing.managers
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,7 +15,7 @@ def bubble_sort(array, start, end):
             if array[j] > array[j + 1]:
                 array[j], array[j + 1] = array[j + 1], array[j]
 
-#@jit(nopython=True)
+@jit(nopython=True)
 def merge(array, start, middle, end):
     L = array[start:middle]
     R = array[middle:end]
@@ -34,14 +35,6 @@ def merge(array, start, middle, end):
             array[k] = L[i]
             i += 1
 
-def ans1():
-    print('ans1')
-
-def ans2():
-    print('ans2')
-
-def ans3():
-    print('ans3')
 
 def check(end, k):
     if k <= 0:
@@ -53,20 +46,41 @@ def check(end, k):
     if end // k == 0:
         raise "k too large"
 
-def thread_merge_thread(array, queue):
-    while not queue.empty():
-        item = queue.get()
-        task = item.task
+def thread_merge_thread(array, q):
+    try:
+        while not q.empty():
+            item = q.get(block=False)
+            task = item.task
 
-        print(item.priority)
-        task.semaphoreL.acquire()
-        task.semaphoreR.acquire()
-        print('go')
+            task.semaphoreL.acquire()
+            task.semaphoreR.acquire()
 
-        merge(array, task.start, task.middle, task.end)
+            merge_process(array, task.start, task.middle, task.end)
 
-        task.cur_semaphore.release()
-    print('done')
+            task.cur_semaphore.release()
+    except queue.Empty:
+        return
+
+def merge_process(share_array, start, middle, end):
+    array = share_array[start:end]
+    merge(array, 0, middle - start, end - start)
+    share_array[start:end] = array[:]
+
+def process_merge_process(array, q):
+    try:
+        while not q.empty():
+            item = q.get(block=False)
+            task = item.task
+
+            task.semaphoreL.acquire()
+            task.semaphoreR.acquire()
+
+            merge_process(array, task.start, task.middle, task.end)
+
+            task.cur_semaphore.release()
+    except queue.Empty:
+        return
+
 @dataclass(order=False)
 class Task:
     start: int
@@ -76,32 +90,41 @@ class Task:
     semaphoreL: threading.Semaphore
     semaphoreR: threading.Semaphore
 
+@dataclass(order=False)
+class TaskProcess:
+    start: int
+    middle: int
+    end: int
+    cur_semaphore: multiprocessing.managers.SyncManager
+    semaphoreL: multiprocessing.managers.SyncManager
+    semaphoreR: multiprocessing.managers.SyncManager
+
 @dataclass(order=True)
 class PrioritizedItem:
     priority: int
     task: Any=field(compare=False)
 
-def range_merge_schedule_process(array, splits, splits_start, splits_end_index, deep, queue):
+def range_merge_schedule_process(array, splits, splits_start, splits_end_index, deep, queue, manager):
     if splits_start < splits_end_index:
         q = (splits_start + splits_end_index) // 2
 
-        semaphore1 = range_merge_schedule(array, splits, splits_start, q, deep + 1, queue)
-        semaphore2 = range_merge_schedule(array, splits, q + 1, splits_end_index, deep + 1, queue)
+        semaphore1 = range_merge_schedule_process(array, splits, splits_start, q, deep + 1, queue, manager)
+        semaphore2 = range_merge_schedule_process(array, splits, q + 1, splits_end_index, deep + 1, queue, manager)
 
         start = splits[splits_start][0]
         middle = splits[q][1]
         end = splits[splits_end_index][1]
 
-        cur_semaphore = multiprocessing.Semaphore(0)
+        cur_semaphore = manager.Semaphore(0)
 
-        task = Task(start, middle, end, cur_semaphore, semaphore1, semaphore2)
+        task = TaskProcess(start, middle, end, cur_semaphore, semaphore1, semaphore2)
 
         item = PrioritizedItem(-deep, task)
         queue.put(item)
         return cur_semaphore
     else:
         # has resource
-        return multiprocessing.Semaphore(1)
+        return manager.Semaphore(1)
 
 def range_merge_schedule(array, splits, splits_start, splits_end_index, deep, queue):
     if splits_start < splits_end_index:
@@ -127,11 +150,8 @@ def range_merge_schedule(array, splits, splits_start, splits_end_index, deep, qu
 
 def bubble_sort_process(share_array, start, end):
     array = share_array[start:end]
-    j = 0
     bubble_sort(array, 0, len(array))
-    for i in range(start, end):
-        share_array[i] = array[j]
-        j += 1
+    share_array[start:end] = array[:]
 
 def bubble_merge_process(array, start, end, k):
     splits = split_array(start, end, k)
@@ -148,18 +168,18 @@ def bubble_merge_process(array, start, end, k):
         processs[i].join()
 
     # scheduling merging execution order
-    managers = multiprocessing.Manager()
-    pq_tmp = queue.PriorityQueue()
-    q = multiprocessing.Queue()
-    while not pq_tmp.empty():
-        q.put(pq_tmp.get())
+    manager = multiprocessing.Manager()
+    q = manager.Queue()
+    pq = queue.PriorityQueue()
+    range_merge_schedule_process(array, splits, 0, k - 1, 0, pq, manager)
 
-    range_merge_schedule_process(array, splits, 0, k - 1, 0, q)
+    while not pq.empty():
+        q.put(pq.get())
 
     # merge
     processs = [0] * (k - 1)
     for i in range(0, k - 1):
-        processs[i] = multiprocessing.Process(target=thread_merge_thread, args=(share_array, q))
+        processs[i] = multiprocessing.Process(target=process_merge_process, args=(share_array, q))
         processs[i].start()
 
     # wait all merge done
@@ -167,15 +187,14 @@ def bubble_merge_process(array, start, end, k):
        processs[i].join()
 
     # copy data
-    for i in range(start, end):
-        array[i] = share_array[i]
+    array[:] = share_array[:]
 
 def bubble_merge_thread(array, start, end, k):
     splits = split_array(start, end, k)
 
     threads = []
     for i in splits:
-        thread_tmp = threading.Thread(target=bubble_sort, args=(array, i[0], i[1]))
+        thread_tmp = threading.Thread(target=bubble_sort_process, args=(array, i[0], i[1]))
         thread_tmp.start()
         threads.append(thread_tmp)
 
@@ -232,37 +251,46 @@ def bubble_merge(array, start, end, k):
 
     range_merge(array, splits, 0, k - 1, 0)
 
-def ans4():
-    print('ans4')
 
-l = [2, 12389, 17823, 17232, 2387, 2, 123, 43, 4,3, 3,2 ,2 ]
-bubble_sort(l, 0, len(l))
-print(l)
-
-l = [0] * 10000
-start = time.time()
-bubble_sort(l, 0, len(l))
-end = time.time()
-print(end - start)
-
-for i in range(3,10):
-    l = [2, 12389, 17823, 17232, 2387, 2, 123, 43, 4,3, 3,2 ,2 ]
-    start = time.time()
-    bubble_merge(l, 0, len(l), i)
-    end = time.time()
-    #print(end - start)
-    print(l)
-
-    l = [2, 12389, 17823, 17232, 2387, 2, 123, 43, 4,3, 3,2 ,2 ]
-    bubble_merge_thread(l, 0, len(l), i)
-    print(l)
-
-    l = [2, 12389, 17823, 17232, 2387, 2, 123, 43, 4,3, 3,2 ,2 ]
-    bubble_merge_process(l, 0, len(l), i)
-    print(l)
 
 
 def test():
+    ans = [i for i in range(1, 100)]
+    ans2 = [i for i in range(1, 101)]
+    q1 = ans.copy()
+    q1.reverse()
+    q2 = ans2.copy()
+    q2.reverse()
+
+    for i in range(3,10):
+
+        l = q1.copy()
+        bubble_merge(l, 0, len(l), i)
+        assert(l == ans)
+
+        l = q2.copy()
+        bubble_merge(l, 0, len(l), i)
+        assert(l == ans2)
+
+        l = q1.copy()
+        bubble_merge_thread(l, 0, len(l), i)
+        assert(l == ans)
+
+        l = q2.copy()
+        bubble_merge_thread(l, 0, len(l), i)
+        assert(l == ans2)
+
+        l = q1.copy()
+        bubble_merge_process(l, 0, len(l), i)
+        assert(l == ans)
+
+        l = q2.copy()
+        bubble_merge_process(l, 0, len(l), i)
+        assert(l == ans2)
+
+    """
+    l = [0] * 10000
+
     try:
         bubble_merge(l, 0, len(l), 10000)
     except:
@@ -279,10 +307,85 @@ def test():
         assert(False)
     except:
         print(1)
+    """
+
 # test()
 
-ans1()
-ans2()
-ans3()
-ans4()
+# JIT first
+bubble_sort([0], 0, 0)
+merge([0], 0, 0, 0)
+
+def ans1(array):
+    print('ans1')
+
+    start = time.time()
+    bubble_sort(array, 0, len(array))
+    end = time.time()
+
+    return  end - start
+
+def ans2(array):
+    print('ans2')
+    k = int(input('k: '))
+    start = time.time()
+    bubble_merge_process(array, 0, len(array), k)
+    end = time.time()
+    return  end - start
+
+def ans3(array):
+    print('ans3')
+    k = int(input('k: '))
+    start = time.time()
+    bubble_merge_thread(array, 0, len(array), k)
+    end = time.time()
+    return  end - start
+
+def ans4(array):
+    print('ans4')
+    k = int(input('k: '))
+    start = time.time()
+    bubble_merge(array, 0, len(array), k)
+    end = time.time()
+    return  end - start
+
+while True:
+    try:
+        filename = input("filename: ")
+        timecost = 0
+        with open(filename, "r") as f:
+            command = int(f.readline())
+            data = f.readline().split()
+
+            array = [int(i) for i in data]
+
+            if command == 1:
+                timecost = ans1(array)
+            elif command == 2:
+                timecost = ans2(array)
+            elif command == 3:
+                timecost = ans3(array)
+            elif command == 4:
+                timecost = ans4(array)
+            else:
+                raise NameError
+
+            f.close()
+
+        with open(filename + '.output', "w") as f:
+            for i in array:
+                f.write('{} '.format(i))
+
+            f.write('\ntime: {}\n'.format(timecost))
+            f.close()
+
+    except ValueError:
+        print('Data must be Number')
+    except FileNotFoundError:
+        print('file not found')
+    except NameError:
+        print('command not found')
+    except EOFError:
+        break
+    except KeyboardInterrupt:
+        break
 
