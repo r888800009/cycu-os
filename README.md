@@ -19,11 +19,14 @@
 ``` plaintext
 filename: input.txt
 ans1
+time: 0.28061532974243164
 output file: input.txt.output
 filename: input2.txt
 ans2
 k: 4
+time: 0.09701848030090332
 output file: input2.txt.output
+filename:
 ```
 
 程式顯示 `input.txt.output` 與 `input2.txt.output` 都是排列好的輸出檔。

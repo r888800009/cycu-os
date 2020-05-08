@@ -372,6 +372,7 @@ while True:
             for i in array:
                 f.write('{} '.format(i))
 
+            print('time: {}'.format(timecost))
             f.write('\ntime: {}\n'.format(timecost))
             print('output file: {}'.format(filename + '.output'))
             f.close()
