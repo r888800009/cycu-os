@@ -251,9 +251,6 @@ def bubble_merge(array, start, end, k):
 
     range_merge(array, splits, 0, k - 1, 0)
 
-
-
-
 def test():
     ans = [i for i in range(1, 100)]
     ans2 = [i for i in range(1, 101)]
@@ -376,6 +373,7 @@ while True:
                 f.write('{} '.format(i))
 
             f.write('\ntime: {}\n'.format(timecost))
+            print('output file: {}'.format(filename + '.output'))
             f.close()
 
     except ValueError:
