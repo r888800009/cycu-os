@@ -1,0 +1,8 @@
+peda*
+*.output
+*.png
+.gdb*
+*.zip
+*/
+README.html
+README.txt
