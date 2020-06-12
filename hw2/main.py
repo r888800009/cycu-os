@@ -320,16 +320,6 @@ def load_and_run(name):
     turnaround_time_dict = {}
     method_order = []
 
-    class sdt_file_out:
-       def __init__(self, stream, f):
-           self.stream = stream
-           self.f = f
-
-       def write(self, data):
-           self.stream.write(data)
-           self.stream.flush()
-           self.f.write(data)
-
     outname = name.replace('input', 'output')
     if outname == name:
         outname = name + '.output'
